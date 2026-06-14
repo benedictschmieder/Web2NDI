@@ -1,5 +1,6 @@
 # HTML to NDI Converter
 
+> [!WARNING] 
 > **Disclaimer:** This app is fully vibecoded and is provided as-is, without warranty. Review, test, and validate it thoroughly before relying on it in a production environment.
 
 A Windows tool for media production and live streaming that renders a live web page (an "HTML stream") and publishes it on the network as an **NDI** video source. Point it at any URL and it appears as an NDI input in vMix, OBS (with the NDI plugin), TriCaster, Wirecast, and other NDI-aware software.
