@@ -12,10 +12,10 @@
       "conditions": [
         [ "OS=='win'", {
           "include_dirs": [
-            "<!(node -e \"console.log((process.env.NDI_SDK_DIR || 'C:/Program Files/NDI/NDI 6 SDK') + '/Include')\")"
+            "<!(node scripts/ndi-sdk-dir.js include)"
           ],
           "libraries": [
-            "<!(node -e \"console.log((process.env.NDI_SDK_DIR || 'C:/Program Files/NDI/NDI 6 SDK') + '/Lib/x64/Processing.NDI.Lib.x64.lib')\")"
+            "<!(node scripts/ndi-sdk-dir.js lib)"
           ],
           "msvs_settings": {
             "VCCLCompilerTool": {
