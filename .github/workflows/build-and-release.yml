@@ -12,8 +12,8 @@ name: Build and Release
 # build time using the NDI_SDK_KEY repository secret. See vendor/README.txt.
 #
 # Required one-time setup:
-#   1. Create vendor/ndi-sdk.enc  (node scripts/crypt-ndi.js encrypt ...)
-#   2. Add repository secret NDI_SDK_KEY with the encryption passphrase.
+#   - Add repository secret NDI_SDK_KEY with the passphrase used to encrypt
+#     vendor/ndi-sdk.enc (the encrypted blob is already committed).
 
 on:
   push:
