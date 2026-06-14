@@ -40,6 +40,7 @@ Must be **Windows x64** — the native addon links against the Windows NDI SDK a
    Default install path: `C:\Program Files\NDI\NDI 6 SDK`
    If you install it elsewhere, set an environment variable `NDI_SDK_DIR` pointing to the SDK root before building.
 
+
 ### Production / vMix machine
 
 Does **not** need Node.js, the build tools, or the NDI SDK — the packaged app bundles its own Electron/Node runtime. It only needs:
@@ -121,16 +122,28 @@ Build on the developer PC, then copy the result to the vMix PC — Node.js and t
 A GitHub Actions workflow (`.github/workflows/build-and-release.yml`) compiles
 the native addon and packages the Windows installer automatically.
 
-One-time setup: the CI runner needs the NDI 6 SDK to compile the addon. Add a
-repository secret with a direct download link to the **NDI 6 SDK** Windows
-installer:
+Because the NDI SDK license forbids republishing the SDK in a public repo, the
+SDK is committed **encrypted** as `vendor/ndi-sdk.enc` and decrypted in CI with
+a passphrase.
 
-- Repo **Settings → Secrets and variables → Actions → New repository secret**
-- Name: `NDI_SDK_URL`
-- Value: the direct `.exe` download URL for the NDI 6 SDK (from
-  https://ndi.video/for-developers/ndi-sdk/)
+The encrypted blob is **already committed** to this repo. The only required
+setup is to add the matching passphrase as a repository secret:
 
-Then:
+- **Settings → Secrets and variables → Actions → New repository secret**
+- Name: `NDI_SDK_KEY`
+- Value: the passphrase that was used to encrypt `vendor/ndi-sdk.enc`
+
+> Updating the SDK later? Re-encrypt and commit the new blob (full steps in
+> [`vendor/README.txt`](vendor/README.txt)):
+>
+> ```powershell
+> $env:NDI_SDK_KEY = "your-passphrase"
+> node scripts/crypt-ndi.js encrypt .\ndi-stage vendor/ndi-sdk.enc
+> git add vendor/ndi-sdk.enc; git commit -m "Update encrypted NDI SDK"
+> ```
+
+The workflow decrypts the SDK, builds the addon, bundles the runtime DLL next
+to the packaged `.exe`, and then:
 
 - **Publish a release:** push a version tag and the workflow builds the
   installer and attaches it to a new GitHub Release.
@@ -144,6 +157,10 @@ Then:
 
 - **Just build:** trigger the workflow manually from the **Actions** tab
   (_Run workflow_). The installer is uploaded as a downloadable build artifact.
+
+> To build or package locally, decrypt first:
+> `node scripts/crypt-ndi.js decrypt vendor/ndi-sdk.enc vendor/ndi`
+> (with `NDI_SDK_KEY` set), then run `npm run build:native` / `npm run dist`.
 
 ## Autostart on boot
 

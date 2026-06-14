@@ -15,11 +15,32 @@ function getElectronVersion() {
   }
 }
 
+// Resolve which NDI SDK to compile against. Priority:
+//   1. NDI_SDK_DIR environment variable (if it contains an Include folder)
+//   2. The SDK vendored into this repo at ./vendor/ndi
+//   3. The default Windows install location
+function resolveNdiSdkDir() {
+  const envDir = process.env.NDI_SDK_DIR;
+  if (envDir && fs.existsSync(path.join(envDir, "Include"))) {
+    return envDir;
+  }
+  const vendored = path.join(__dirname, "..", "vendor", "ndi");
+  if (fs.existsSync(path.join(vendored, "Include"))) {
+    return vendored;
+  }
+  return envDir || "C:\\Program Files\\NDI\\NDI 6 SDK";
+}
+
 function main() {
   const electronVersion = getElectronVersion();
 
   const env = { ...process.env };
   const args = ["rebuild"];
+
+  // Make the chosen NDI SDK location available to binding.gyp.
+  const ndiSdkDir = resolveNdiSdkDir();
+  env.NDI_SDK_DIR = ndiSdkDir;
+  console.log(`[build-native] Using NDI SDK at: ${ndiSdkDir}`);
 
   if (electronVersion) {
     // Build against Electron's bundled Node headers.

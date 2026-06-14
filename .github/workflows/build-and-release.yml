@@ -7,9 +7,13 @@ name: Build and Release
 # - On manual run (workflow_dispatch): builds and uploads the installer as a
 #   workflow artifact you can download from the run page.
 #
-# Prerequisite: add a repository secret named NDI_SDK_URL containing a direct
-# download link to the "NDI 6 SDK" Windows installer (.exe). The native addon
-# is compiled against this SDK. See README ("Continuous builds / Releases").
+# The native addon is compiled against the NDI 6 SDK that is committed to the
+# repo as an ENCRYPTED blob (vendor/ndi-sdk.enc). The workflow decrypts it at
+# build time using the NDI_SDK_KEY repository secret. See vendor/README.txt.
+#
+# Required one-time setup:
+#   1. Create vendor/ndi-sdk.enc  (node scripts/crypt-ndi.js encrypt ...)
+#   2. Add repository secret NDI_SDK_KEY with the encryption passphrase.
 
 on:
   push:
@@ -34,44 +38,37 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      - name: Install NDI SDK
+      - name: Decrypt NDI SDK
         shell: pwsh
+        env:
+          NDI_SDK_KEY: ${{ secrets.NDI_SDK_KEY }}
         run: |
-          $url = "${{ secrets.NDI_SDK_URL }}"
-          if ([string]::IsNullOrWhiteSpace($url)) {
-            Write-Error "Repository secret 'NDI_SDK_URL' is not set. Add a direct download URL to the NDI 6 SDK Windows installer (.exe)."
+          if ([string]::IsNullOrWhiteSpace($env:NDI_SDK_KEY)) {
+            Write-Error "Repository secret 'NDI_SDK_KEY' is not set. Add the passphrase used to encrypt vendor/ndi-sdk.enc (see vendor/README.txt)."
             exit 1
           }
-          $installer = Join-Path $env:RUNNER_TEMP "ndi-sdk.exe"
-          Write-Host "Downloading NDI SDK installer..."
-          Invoke-WebRequest -Uri $url -OutFile $installer
-
-          Write-Host "Running silent install..."
-          Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -Wait
-
-          # Locate the installed SDK (default: C:\Program Files\NDI\NDI 6 SDK).
-          $sdk = "C:\Program Files\NDI\NDI 6 SDK"
-          if (-not (Test-Path (Join-Path $sdk "Include\Processing.NDI.Lib.h"))) {
-            Write-Host "Default path not found, searching for the SDK..."
-            $hdr = Get-ChildItem "C:\Program Files\NDI" -Recurse -Filter "Processing.NDI.Lib.h" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($hdr) { $sdk = Split-Path (Split-Path $hdr.FullName -Parent) -Parent }
-          }
-          if (-not (Test-Path (Join-Path $sdk "Include\Processing.NDI.Lib.h"))) {
-            Write-Error "NDI SDK headers were not found after installation. Check that NDI_SDK_URL points to the NDI 6 SDK installer."
+          if (-not (Test-Path "vendor/ndi-sdk.enc")) {
+            Write-Error "vendor/ndi-sdk.enc not found. Create it with 'node scripts/crypt-ndi.js encrypt <sourceDir>' and commit it (see vendor/README.txt)."
             exit 1
           }
-          Write-Host "NDI_SDK_DIR=$sdk"
-          "NDI_SDK_DIR=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          node scripts/crypt-ndi.js decrypt vendor/ndi-sdk.enc vendor/ndi
+          $required = @(
+            "vendor/ndi/Include/Processing.NDI.Lib.h",
+            "vendor/ndi/Lib/x64/Processing.NDI.Lib.x64.lib",
+            "vendor/ndi/Bin/x64/Processing.NDI.Lib.x64.dll"
+          )
+          $missing = $required | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            Write-Error ("Decrypted SDK is missing expected files:`n  " + ($missing -join "`n  "))
+            exit 1
+          }
+          Write-Host "NDI SDK decrypted to vendor/ndi."
 
       - name: Install dependencies and build native addon
         run: npm ci
-        env:
-          NDI_SDK_DIR: ${{ env.NDI_SDK_DIR }}
 
       - name: Package Windows executable
         run: npm run dist
-        env:
-          NDI_SDK_DIR: ${{ env.NDI_SDK_DIR }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
