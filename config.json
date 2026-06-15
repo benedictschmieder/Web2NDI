@@ -1,12 +1,16 @@
 {
-  "url": "https://example.com",
-  "ndiName": "HTML to NDI",
-  "width": 1920,
-  "height": 1080,
-  "fps": 60,
-  "frameRateNumerator": 60000,
-  "frameRateDenominator": 1000,
-  "transparent": false,
   "disableHardwareAcceleration": true,
-  "reloadOnFailureSeconds": 5
+  "streams": [
+    {
+      "url": "https://example.com",
+      "ndiName": "HTML to NDI",
+      "width": 1920,
+      "height": 1080,
+      "fps": 60,
+      "frameRateNumerator": 60000,
+      "frameRateDenominator": 1000,
+      "transparent": false,
+      "reloadOnFailureSeconds": 5
+    }
+  ]
 }

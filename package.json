@@ -1,10 +1,10 @@
 {
   "name": "html-to-ndi-converter",
   "productName": "HTML to NDI Converter",
-  "version": "1.0.12",
+  "version": "1.1.0",
   "description": "Renders a live web page (HTML stream) offscreen and outputs it as an NDI video source for media production and streaming.",
   "main": "src/main.js",
-  "author": "",
+  "author": "Benedict Schmieder",
   "license": "MIT",
   "scripts": {
     "build:native": "node scripts/build-native.js",
@@ -41,6 +41,7 @@
       }
     ],
     "win": {
+      "publisherName": "Benedict Schmieder",
       "target": [
         {
           "target": "nsis",

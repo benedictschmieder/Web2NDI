@@ -13,6 +13,7 @@ const {
   shell,
 } = require("electron");
 const path = require("path");
+const fs = require("fs");
 const logger = require("./logger");
 
 // Single instance: a second launch must not fight over the NDI name.
@@ -25,16 +26,11 @@ if (!app.requestSingleInstanceLock()) {
 logger.init();
 logger.patchConsole();
 
-const config = require("./config");
+const { loadConfig, resolveConfigPath } = require("./config");
 
 // ---------------------------------------------------------------------------
-// Service status (surfaced in the tray).
+// State.
 // ---------------------------------------------------------------------------
-const status = {
-  state: "starting", // starting | loading | streaming | error
-  detail: "",
-  size: "",
-};
 let tray = null;
 
 // Embedded 32x32 tray icon (blue ring + play glyph) so no binary asset is
@@ -81,10 +77,30 @@ try {
   process.exit(1);
 }
 
+// Load the initial configuration. Parsing happens before app "ready" because
+// disableHardwareAcceleration must be decided that early. A broken config at
+// startup leaves the app running with no streams; the file watcher recovers as
+// soon as the file is fixed.
+let appConfig;
+try {
+  appConfig = loadConfig();
+} catch (err) {
+  console.error(`[config] Failed to parse config at startup: ${err.message}`);
+  appConfig = {
+    configPath: resolveConfigPath(),
+    disableHardwareAcceleration: true,
+    streams: [],
+  };
+}
+
+// disableHardwareAcceleration can only be applied once, before "ready". A later
+// change in the config file therefore requires an app restart (we warn on it).
+const initialDisableHWA = appConfig.disableHardwareAcceleration;
+
 // Software offscreen rendering yields CPU-accessible BGRA bitmaps in the
 // "paint" event, which is exactly what NDI needs. GPU OSR delivers a shared
 // texture instead, so disabling HW acceleration keeps things simple/robust.
-if (config.disableHardwareAcceleration) {
+if (initialDisableHWA) {
   app.disableHardwareAcceleration();
 }
 
@@ -93,85 +109,297 @@ app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
-let win = null;
-let sender = null;
-let senderW = 0;
-let senderH = 0;
-let reloadTimer = null;
+// Active streams (one Stream instance per configured NDI source) and the
+// debounce/watch state used to live-reload config.json.
+let streams = [];
+let configError = null; // last config-parse error message, surfaced in the tray
+let watchedPath = null;
+let reloadDebounce = null;
 
-// Latest captured frame. Chromium's offscreen renderer only fires "paint" when
-// the page changes, so we cache the most recent bitmap and re-transmit it on a
-// steady timer. This keeps the NDI stream alive and guarantees that a receiver
-// connecting at any moment immediately gets the current frame instead of
-// whatever happened to be sent last.
-let lastFrame = null; // { data: Buffer, width, height }
-let frameTimer = null;
 
-// Throughput counter (reset every health-log window) and its timer.
-let sendCount = 0;
-let healthTimer = null;
+// ---------------------------------------------------------------------------
+// Stream: owns one offscreen window + NDI sender pair plus the timers that keep
+// the source alive. Each configured NDI source gets its own instance.
+// ---------------------------------------------------------------------------
+class Stream {
+  constructor(cfg) {
+    this.cfg = cfg;
+    this.win = null;
+    this.sender = null;
+    this.senderW = 0;
+    this.senderH = 0;
+    // Latest captured frame. Chromium's offscreen renderer only fires "paint"
+    // when the page changes, so we cache the most recent bitmap and re-transmit
+    // it on a steady timer. This keeps the NDI stream alive and guarantees a
+    // receiver connecting at any moment immediately gets the current frame.
+    this.lastFrame = null; // { data: Buffer, width, height }
+    this.frameTimer = null;
+    this.healthTimer = null;
+    this.reloadTimer = null;
+    this.sendCount = 0;
+    this.state = "starting"; // starting | loading | streaming | error
+    this.detail = "";
+    this.size = "";
+    this.destroyed = false;
+  }
+
+  setStatus(state, detail) {
+    this.state = state;
+    if (detail !== undefined) this.detail = detail;
+    updateTray();
+  }
+
+  statusLine() {
+    switch (this.state) {
+      case "streaming":
+        return `\u25CF ${this.cfg.ndiName}${this.size ? " @ " + this.size : ""}`;
+      case "loading":
+        return `\u25CB ${this.cfg.ndiName} \u2013 loading\u2026`;
+      case "error":
+        return `\u26A0 ${this.cfg.ndiName} \u2013 ${this.detail || "see log"}`;
+      default:
+        return `\u25CB ${this.cfg.ndiName} \u2013 starting\u2026`;
+    }
+  }
+
+  ensureSender(width, height) {
+    if (this.sender && width === this.senderW && height === this.senderH) {
+      return;
+    }
+    if (this.sender) {
+      try {
+        this.sender.destroy();
+      } catch (e) {
+        /* ignore */
+      }
+      this.sender = null;
+    }
+    this.sender = new addon.NdiSender(this.cfg.ndiName);
+    this.senderW = width;
+    this.senderH = height;
+    this.size = `${width}x${height}`;
+    this.setStatus("streaming");
+    console.log(`[ndi] Source "${this.cfg.ndiName}" @ ${width}x${height}`);
+  }
+
+  // Transmit the most recent frame at a steady cadence (cfg.fps). Sending
+  // continuously - rather than only on the 'paint' event - means a receiver
+  // that selects the source at any time immediately receives the current frame,
+  // instead of a stale one left over from the last page change.
+  startFrameLoop() {
+    if (this.frameTimer) return;
+    const intervalMs = Math.max(1, Math.round(1000 / Math.max(1, this.cfg.fps)));
+    console.log(
+      `[frame] "${this.cfg.ndiName}" loop started: target ${this.cfg.fps} fps (every ${intervalMs}ms)`,
+    );
+    this.frameTimer = setInterval(() => {
+      if (!this.lastFrame) return;
+      try {
+        this.ensureSender(this.lastFrame.width, this.lastFrame.height);
+        this.sender.send(
+          this.lastFrame.data,
+          this.lastFrame.width,
+          this.lastFrame.height,
+          this.cfg.frameRateNumerator,
+          this.cfg.frameRateDenominator,
+        );
+        this.sendCount++;
+      } catch (err) {
+        console.error(`[frame] "${this.cfg.ndiName}"`, err.message);
+      }
+    }, intervalMs);
+    this.startHealthLoop();
+  }
+
+  // Periodic health line so the log shows, at a glance, that frames are still
+  // flowing to NDI and how many receivers are connected. A drop to 0 fps points
+  // to a stalled renderer; 0 receivers with frames flowing points to a network
+  // or discovery problem on the receiving side.
+  startHealthLoop() {
+    if (this.healthTimer) return;
+    const windowSecs = 10;
+    this.healthTimer = setInterval(() => {
+      const fps = Math.round(this.sendCount / windowSecs);
+      this.sendCount = 0;
+      if (fps === 0) {
+        console.warn(
+          `[health] "${this.cfg.ndiName}" no frames sent in last ${windowSecs}s ` +
+            `(lastFrame=${this.lastFrame ? "present" : "none"})`,
+        );
+        return;
+      }
+      const receivers =
+        this.sender && typeof this.sender.getConnections === "function"
+          ? this.sender.getConnections()
+          : "?";
+      console.log(
+        `[health] "${this.cfg.ndiName}" ${fps} fps to NDI, receivers=${receivers}, ${this.senderW}x${this.senderH}`,
+      );
+    }, windowSecs * 1000);
+  }
+
+  stopLoops() {
+    if (this.frameTimer) {
+      clearInterval(this.frameTimer);
+      this.frameTimer = null;
+    }
+    if (this.healthTimer) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = null;
+    }
+  }
+
+  scheduleReload(reason) {
+    this.setStatus("error", reason);
+    if (this.reloadTimer || this.destroyed) return;
+    const secs = Math.max(1, this.cfg.reloadOnFailureSeconds || 5);
+    console.warn(`[reload] "${this.cfg.ndiName}" ${reason} - retrying in ${secs}s`);
+    this.reloadTimer = setTimeout(() => {
+      this.reloadTimer = null;
+      if (this.win && !this.win.isDestroyed()) {
+        this.setStatus("loading");
+        this.win.loadURL(this.cfg.url).catch((e) => this.scheduleReload(e.message));
+      }
+    }, secs * 1000);
+  }
+
+  start() {
+    const cfg = this.cfg;
+    this.win = new BrowserWindow({
+      width: cfg.width,
+      height: cfg.height,
+      show: false,
+      frame: false,
+      transparent: cfg.transparent,
+      backgroundColor: cfg.transparent ? "#00000000" : "#000000",
+      useContentSize: true,
+      webPreferences: {
+        offscreen: true,
+        backgroundThrottling: false,
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
+
+    this.win.webContents.setAudioMuted(true);
+    this.win.webContents.setFrameRate(cfg.fps);
+
+    this.win.webContents.on("paint", (event, dirty, image) => {
+      try {
+        const sz = image.getSize();
+        if (sz.width === 0 || sz.height === 0) return;
+        // Copy the bitmap: the image buffer is only valid for the duration of
+        // the event, but the frame loop needs a stable reference between paints.
+        this.lastFrame = {
+          data: Buffer.from(image.toBitmap()), // BGRA, length = w*h*4
+          width: sz.width,
+          height: sz.height,
+        };
+      } catch (err) {
+        console.error(`[paint] "${cfg.ndiName}"`, err.message);
+      }
+    });
+
+    this.startFrameLoop();
+
+    this.win.webContents.on("did-fail-load", (e, code, desc, url, isMainFrame) => {
+      if (isMainFrame) this.scheduleReload(`did-fail-load (${code} ${desc})`);
+    });
+
+    this.win.webContents.on("render-process-gone", (e, details) => {
+      this.scheduleReload(`render-process-gone (${details.reason})`);
+    });
+
+    this.win.webContents.on("unresponsive", () => {
+      this.scheduleReload("renderer unresponsive");
+    });
+
+    this.win.webContents.on("did-finish-load", () => {
+      console.log(`[load] "${cfg.ndiName}" page loaded`);
+      // Stay in 'loading' until the first frame actually creates the sender;
+      // ensureSender() flips status to 'streaming'.
+      if (this.state === "error") this.setStatus("loading");
+    });
+
+    this.setStatus("loading");
+    this.win.loadURL(cfg.url).catch((e) => this.scheduleReload(e.message));
+  }
+
+  destroy() {
+    this.destroyed = true;
+    this.stopLoops();
+    if (this.reloadTimer) {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = null;
+    }
+    if (this.win && !this.win.isDestroyed()) {
+      try {
+        this.win.destroy();
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    this.win = null;
+    if (this.sender) {
+      try {
+        this.sender.destroy();
+      } catch (e) {
+        /* ignore */
+      }
+      this.sender = null;
+    }
+    this.lastFrame = null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tray icon + status menu.
 // ---------------------------------------------------------------------------
-function setStatus(state, detail) {
-  status.state = state;
-  if (detail !== undefined) status.detail = detail;
-  updateTray();
-}
-
-function statusLine() {
-  switch (status.state) {
-    case "streaming":
-      return `\u25CF Streaming \u2013 ${config.ndiName}${
-        status.size ? " @ " + status.size : ""
-      }`;
-    case "loading":
-      return "\u25CB Loading page\u2026";
-    case "error":
-      return `\u26A0 Error: ${status.detail || "see log"}`;
-    default:
-      return "\u25CB Starting\u2026";
-  }
-}
-
 function openConfig() {
-  if (config.configPath) {
-    shell.openPath(config.configPath).then((err) => {
+  const p = appConfig && appConfig.configPath;
+  if (p) {
+    shell.openPath(p).then((err) => {
       if (err) console.error("[tray] open config failed:", err);
     });
   }
 }
 
+function traySummary() {
+  if (configError) return `\u26A0 Config error`;
+  if (streams.length === 0) return "No streams configured";
+  const streaming = streams.filter((s) => s.state === "streaming").length;
+  return `${streaming}/${streams.length} streaming`;
+}
+
 function updateTray() {
   if (!tray) return;
-  const menu = Menu.buildFromTemplate([
-    { label: statusLine(), enabled: false },
-    { label: `URL: ${config.url}`, enabled: false },
-    { type: "separator" },
-    { label: "Open config.json", click: openConfig },
-    {
-      label: "Open log file",
-      click: () => shell.openPath(logger.getLogFilePath()),
-    },
-    {
-      label: "Open log folder",
-      click: () => shell.showItemInFolder(logger.getLogFilePath()),
-    },
-    { type: "separator" },
-    {
-      label: "Reload page",
-      click: () => {
-        if (win && !win.isDestroyed()) {
-          setStatus("loading");
-          win.loadURL(config.url).catch((e) => scheduleReload(e.message));
-        }
-      },
-    },
-    { label: "Quit", click: () => app.quit() },
-  ]);
-  tray.setToolTip(`HTML to NDI \u2013 ${statusLine()}`);
-  tray.setContextMenu(menu);
+  const items = [];
+  if (configError) {
+    items.push({ label: `\u26A0 Config error \u2013 ${configError}`, enabled: false });
+    items.push({ type: "separator" });
+  } else if (streams.length === 0) {
+    items.push({ label: "No streams configured", enabled: false });
+    items.push({ type: "separator" });
+  }
+  streams.forEach((s) => {
+    items.push({ label: s.statusLine(), enabled: false });
+    items.push({ label: `    ${s.cfg.url}`, enabled: false });
+  });
+  if (streams.length > 0) items.push({ type: "separator" });
+  items.push({ label: "Open config.json", click: openConfig });
+  items.push({
+    label: "Open log file",
+    click: () => shell.openPath(logger.getLogFilePath()),
+  });
+  items.push({
+    label: "Open log folder",
+    click: () => shell.showItemInFolder(logger.getLogFilePath()),
+  });
+  items.push({ type: "separator" });
+  items.push({ label: "Quit", click: () => app.quit() });
+
+  tray.setToolTip(`HTML to NDI \u2013 ${traySummary()}`);
+  tray.setContextMenu(Menu.buildFromTemplate(items));
 }
 
 function createTray() {
@@ -182,166 +410,72 @@ function createTray() {
   updateTray();
 }
 
-function ensureSender(width, height) {
-  if (sender && width === senderW && height === senderH) {
+// ---------------------------------------------------------------------------
+// Stream lifecycle + live config reload.
+// ---------------------------------------------------------------------------
+function startStreams(cfg) {
+  streams = cfg.streams.map((sc) => {
+    const s = new Stream(sc);
+    s.start();
+    return s;
+  });
+  updateTray();
+}
+
+function stopStreams() {
+  for (const s of streams) s.destroy();
+  streams = [];
+}
+
+// Re-read config.json and rebuild all streams. On a parse error we keep the
+// currently running streams and surface the problem in the tray/log, so a
+// half-saved or invalid edit never takes the running service down.
+function reloadConfig() {
+  let next;
+  try {
+    next = loadConfig();
+  } catch (err) {
+    configError = err.message;
+    console.warn(
+      `[config] reload failed, keeping current streams: ${err.message}`,
+    );
+    updateTray();
     return;
   }
-  if (sender) {
-    try {
-      sender.destroy();
-    } catch (e) {
-      /* ignore */
-    }
-    sender = null;
-  }
-  sender = new addon.NdiSender(config.ndiName);
-  senderW = width;
-  senderH = height;
-  status.size = `${width}x${height}`;
-  setStatus("streaming");
-  console.log(`[ndi] Source "${config.ndiName}" @ ${width}x${height}`);
-}
+  configError = null;
 
-// Transmit the most recent frame at a steady cadence (config.fps). Sending
-// continuously - rather than only on the 'paint' event - means a receiver that
-// selects the source at any time immediately receives the current frame,
-// instead of a stale one left over from the last page change.
-function startFrameLoop() {
-  if (frameTimer) return;
-  const intervalMs = Math.max(1, Math.round(1000 / Math.max(1, config.fps)));
-  console.log(
-    `[frame] loop started: target ${config.fps} fps (every ${intervalMs}ms)`,
-  );
-  frameTimer = setInterval(() => {
-    if (!lastFrame) return;
-    try {
-      ensureSender(lastFrame.width, lastFrame.height);
-      sender.send(
-        lastFrame.data,
-        lastFrame.width,
-        lastFrame.height,
-        config.frameRateNumerator,
-        config.frameRateDenominator,
-      );
-      sendCount++;
-    } catch (err) {
-      console.error("[frame]", err.message);
-    }
-  }, intervalMs);
-  startHealthLoop();
-}
-
-// Periodic health line so the log shows, at a glance, that frames are still
-// flowing to NDI and how many receivers are connected. A drop to 0 fps points
-// to a stalled renderer; 0 receivers with frames flowing points to a network or
-// discovery problem on the receiving side.
-function startHealthLoop() {
-  if (healthTimer) return;
-  const windowSecs = 10;
-  healthTimer = setInterval(() => {
-    const fps = Math.round(sendCount / windowSecs);
-    sendCount = 0;
-    if (fps === 0) {
-      console.warn(
-        `[health] no frames sent in last ${windowSecs}s ` +
-          `(lastFrame=${lastFrame ? "present" : "none"})`,
-      );
-      return;
-    }
-    const receivers =
-      sender && typeof sender.getConnections === "function"
-        ? sender.getConnections()
-        : "?";
-    console.log(
-      `[health] ${fps} fps to NDI, receivers=${receivers}, ${senderW}x${senderH}`,
+  if (next.disableHardwareAcceleration !== initialDisableHWA) {
+    console.warn(
+      "[config] disableHardwareAcceleration changed; restart the app for it to take effect.",
     );
-  }, windowSecs * 1000);
-}
-
-function stopFrameLoop() {
-  if (frameTimer) {
-    clearInterval(frameTimer);
-    frameTimer = null;
   }
-  if (healthTimer) {
-    clearInterval(healthTimer);
-    healthTimer = null;
+
+  console.log(`[config] reloaded: ${next.streams.length} stream(s)`);
+  appConfig = next;
+  stopStreams();
+  startStreams(next);
+}
+
+// Watch the config file and live-reload on change. fs.watchFile (polling) is
+// used because it reliably handles editors that save atomically (write temp +
+// rename) and files that appear/disappear, which fs.watch can miss.
+function startConfigWatch() {
+  watchedPath = appConfig.configPath;
+  if (!watchedPath) {
+    console.warn("[config] no config path to watch");
+    return;
   }
-}
-
-function scheduleReload(reason) {
-  setStatus("error", reason);
-  if (reloadTimer) return;
-  const secs = Math.max(1, config.reloadOnFailureSeconds || 5);
-  console.warn(`[reload] ${reason} - retrying in ${secs}s`);
-  reloadTimer = setTimeout(() => {
-    reloadTimer = null;
-    if (win && !win.isDestroyed()) {
-      setStatus("loading");
-      win.loadURL(config.url).catch((e) => scheduleReload(e.message));
-    }
-  }, secs * 1000);
-}
-
-function createWindow() {
-  win = new BrowserWindow({
-    width: config.width,
-    height: config.height,
-    show: false,
-    frame: false,
-    transparent: config.transparent,
-    backgroundColor: config.transparent ? "#00000000" : "#000000",
-    useContentSize: true,
-    webPreferences: {
-      offscreen: true,
-      backgroundThrottling: false,
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
+  console.log(`[config] watching ${watchedPath}`);
+  fs.watchFile(watchedPath, { interval: 1000 }, (curr, prev) => {
+    if (curr.mtimeMs === prev.mtimeMs && curr.size === prev.size) return;
+    // Debounce: editors can write in several steps.
+    if (reloadDebounce) clearTimeout(reloadDebounce);
+    reloadDebounce = setTimeout(() => {
+      reloadDebounce = null;
+      console.log("[config] change detected, reloading");
+      reloadConfig();
+    }, 300);
   });
-
-  win.webContents.setAudioMuted(true);
-  win.webContents.setFrameRate(config.fps);
-
-  win.webContents.on("paint", (event, dirty, image) => {
-    try {
-      const size = image.getSize();
-      if (size.width === 0 || size.height === 0) return;
-      // Copy the bitmap: the image buffer is only valid for the duration of the
-      // event, but the frame loop needs a stable reference between paints.
-      lastFrame = {
-        data: Buffer.from(image.toBitmap()), // BGRA, length = w*h*4
-        width: size.width,
-        height: size.height,
-      };
-    } catch (err) {
-      console.error("[paint]", err.message);
-    }
-  });
-
-  startFrameLoop();
-
-  win.webContents.on("did-fail-load", (e, code, desc, url, isMainFrame) => {
-    if (isMainFrame) scheduleReload(`did-fail-load (${code} ${desc})`);
-  });
-
-  win.webContents.on("render-process-gone", (e, details) => {
-    scheduleReload(`render-process-gone (${details.reason})`);
-  });
-
-  win.webContents.on("unresponsive", () => {
-    scheduleReload("renderer unresponsive");
-  });
-
-  win.webContents.on("did-finish-load", () => {
-    console.log("[load] page loaded");
-    // Stay in 'loading' until the first frame actually creates the sender;
-    // ensureSender() flips status to 'streaming'.
-    if (status.state === "error") setStatus("loading");
-  });
-
-  setStatus("loading");
-  win.loadURL(config.url).catch((e) => scheduleReload(e.message));
 }
 
 app.whenReady().then(() => {
@@ -349,27 +483,33 @@ app.whenReady().then(() => {
     `[start] HTML to NDI Converter v${app.getVersion()} (electron ${process.versions.electron})`,
   );
   console.log(
-    `[start] URL=${config.url} size=${config.width}x${config.height} ` +
-      `fps=${config.fps} transparent=${config.transparent}`,
+    `[start] ${appConfig.streams.length} stream(s), ` +
+      `disableHardwareAcceleration=${initialDisableHWA}`,
+  );
+  appConfig.streams.forEach((s) =>
+    console.log(
+      `[start]   - "${s.ndiName}" ${s.url} ${s.width}x${s.height}@${s.fps}`,
+    ),
   );
   console.log(`[start] log file: ${logger.getLogFilePath()}`);
-  console.log(`[start] config file: ${config.configPath}`);
+  console.log(`[start] config file: ${appConfig.configPath}`);
+  if (configError) console.warn(`[start] config error: ${configError}`);
   createTray();
-  createWindow();
+  startStreams(appConfig);
+  startConfigWatch();
 });
 
-app.on("window-all-closed", () => {
-  app.quit();
-});
+// Tray app: stay alive even if all offscreen windows momentarily close during a
+// config reload. Quitting is driven explicitly by the tray "Quit" item.
+app.on("window-all-closed", () => {});
 
 app.on("before-quit", () => {
-  stopFrameLoop();
-  if (sender) {
+  if (watchedPath) {
     try {
-      sender.destroy();
+      fs.unwatchFile(watchedPath);
     } catch (e) {
       /* ignore */
     }
-    sender = null;
   }
+  stopStreams();
 });

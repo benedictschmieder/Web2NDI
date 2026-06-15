@@ -13,18 +13,31 @@ You only need the installer (`HTMLtoNDI Setup x.y.z.exe`) from the [Releases pag
 
 **2. Run the installer.** It's a one-click per-user installer (no admin needed) and launches automatically. It installs to `C:\Users\<you>\AppData\Local\Programs\HTMLtoNDI\`, with `HTMLtoNDI.exe` and `config.json` side by side in that folder.
 
-**3. Configure** by editing `config.json` next to the exe, then restart the app:
+**3. Configure** by editing `config.json` next to the exe. **Changes are applied automatically** — the app watches the file and reloads its streams a moment after you save, no restart needed (the only exception is `disableHardwareAcceleration`, which needs a restart).
 
 | Field                                         | Meaning                                                                                           |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `url`                                         | The web page to render and stream. **The main thing to set.**                                     |
-| `ndiName`                                     | Source name shown in your NDI receiver's source list (e.g. "Scoreboard").                         |
+| `ndiName`                                     | Source name shown in your NDI receiver's source list (e.g. "Scoreboard"). Must be unique per stream. |
 | `width`, `height`                             | Output resolution in pixels.                                                                      |
 | `fps`                                         | Frame rate, 1–60.                                                                                 |
 | `frameRateNumerator` / `frameRateDenominator` | NDI frame-rate metadata. 60000/1000 = 60p, 30000/1001 = 29.97p, 60000/1001 = 59.94p.              |
 | `transparent`                                 | `true` to output an alpha channel for keyable overlays (the page background must be transparent). |
-| `disableHardwareAcceleration`                 | Keep `true` for reliable CPU frame capture.                                                       |
-| `reloadOnFailureSeconds`                      | Auto-reload delay if the page crashes or fails to load.                                           |
+| `disableHardwareAcceleration`                 | App-level. Keep `true` for reliable CPU frame capture (a change here needs an app restart).       |
+| `reloadOnFailureSeconds`                      | Auto-reload delay if the page crashes or fails to load.                                            |
+
+**Multiple streams.** Put several NDI sources in one config with a `streams` array. Keys outside the array (such as `disableHardwareAcceleration`) apply app-wide; each object inside `streams` is one NDI source with its own `url`, `ndiName`, resolution, and fps. A flat single-stream `config.json` (no `streams` array) is still accepted.
+
+```json
+{
+  "disableHardwareAcceleration": true,
+  "streams": [
+    { "url": "https://example.com/scoreboard", "ndiName": "Scoreboard", "transparent": true },
+    { "url": "https://example.com/ticker", "ndiName": "Ticker", "width": 1920, "height": 120 }
+  ]
+}
+```
+
 
 **4. Use it in your NDI receiver** (vMix, OBS with the NDI plugin, TriCaster, Wirecast, etc.) by adding an NDI input and picking the source named after your `ndiName`. (Test first with NDI Studio Monitor from NDI Tools.)
 
