@@ -9,7 +9,7 @@ A Windows tool for media production and live streaming that renders a live web p
 
 You only need the installer (`HTMLtoNDI Setup x.y.z.exe`) from the [Releases page](../../releases) and the free [NDI Tools / Runtime](https://ndi.video/tools/).
 
-**1. Install the NDI Runtime** (one-time, per machine) from https://ndi.video/tools/. This provides the NDI discovery service used by vMix.
+**1. Install the NDI Runtime** (one-time, per machine) from https://ndi.video/tools/. This provides the NDI discovery service used by NDI receivers.
 
 **2. Run the installer.** It's a one-click per-user installer (no admin needed) and launches automatically. It installs to `C:\Users\<you>\AppData\Local\Programs\HTMLtoNDI\`, with `HTMLtoNDI.exe` and `config.json` side by side in that folder.
 
@@ -18,7 +18,7 @@ You only need the installer (`HTMLtoNDI Setup x.y.z.exe`) from the [Releases pag
 | Field | Meaning |
 | --- | --- |
 | `url` | The web page to render and stream. **The main thing to set.** |
-| `ndiName` | Source name shown in vMix's NDI list (e.g. "Scoreboard"). |
+| `ndiName` | Source name shown in your NDI receiver's source list (e.g. "Scoreboard"). |
 | `width`, `height` | Output resolution in pixels. |
 | `fps` | Frame rate, 1–60. |
 | `frameRateNumerator` / `frameRateDenominator` | NDI frame-rate metadata. 60000/1000 = 60p, 30000/1001 = 29.97p, 60000/1001 = 59.94p. |
@@ -26,7 +26,7 @@ You only need the installer (`HTMLtoNDI Setup x.y.z.exe`) from the [Releases pag
 | `disableHardwareAcceleration` | Keep `true` for reliable CPU frame capture. |
 | `reloadOnFailureSeconds` | Auto-reload delay if the page crashes or fails to load. |
 
-**4. Use it in vMix** via **Add Input → NDI** and pick the source named after your `ndiName`. (Test first with NDI Studio Monitor from NDI Tools.)
+**4. Use it in your NDI receiver** (vMix, OBS with the NDI plugin, TriCaster, Wirecast, etc.) by adding an NDI input and picking the source named after your `ndiName`. (Test first with NDI Studio Monitor from NDI Tools.)
 
 **5. Check status & logs.** The app runs in the background with a **system-tray icon**. Right-click it to see the live status (Streaming / Loading / Error), open `config.json`, or open the log file. The log is the first place to look if no NDI source appears — it records the URL, resolution, page load result, and any NDI errors.
 
