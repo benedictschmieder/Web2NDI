@@ -104,7 +104,9 @@
   </head>
   <body>
     <div id="toolbar">
-      <label><input type="checkbox" id="autoscroll" checked /> Autoscroll</label>
+      <label
+        ><input type="checkbox" id="autoscroll" checked /> Autoscroll</label
+      >
       <label><input type="checkbox" id="wrap" /> Wrap</label>
       <input id="filter" type="text" placeholder="Filter… (substring)" />
       <span id="count">0 lines</span>
@@ -134,9 +136,7 @@
       }
 
       function atBottom() {
-        return (
-          logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 30
-        );
+        return logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 30;
       }
 
       function appendLine(line) {
@@ -162,7 +162,10 @@
       function applyFilter() {
         filterText = filterEl.value.trim().toLowerCase();
         for (const div of logEl.children) {
-          div.classList.toggle("hidden", !div.dataset.text.includes(filterText));
+          div.classList.toggle(
+            "hidden",
+            !div.dataset.text.includes(filterText),
+          );
         }
       }
 
