@@ -2,8 +2,10 @@ name: Build and Release
 
 # Builds the Windows executable (installer) and publishes it.
 #
+# - On a push to main (e.g. after a PR merge): builds and uploads the installer
+#   as a workflow artifact to validate packaging. It does NOT create a Release.
 # - On a version tag push (e.g. v1.0.0): builds and creates a GitHub Release
-#   with the installer attached.
+#   with the installer attached (only if the tag is on main; see the guard job).
 # - On manual run (workflow_dispatch): builds and uploads the installer as a
 #   workflow artifact you can download from the run page.
 #
@@ -17,6 +19,8 @@ name: Build and Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -43,10 +47,11 @@ jobs:
         id: check
         shell: bash
         run: |
-          # Manual runs (workflow_dispatch) only ever build artifacts (the
-          # Publish step below is gated on a tag ref), so allow them through.
+          # Non-tag runs (push to main, workflow_dispatch) only build artifacts
+          # (the Publish step below is gated on a tag ref), so allow them
+          # through without the on-main ancestry check.
           if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
-            echo "Manual run: build artifacts only, no release."
+            echo "Non-tag run: build artifacts only, no release."
             echo "release_ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
