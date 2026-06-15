@@ -1,4 +1,4 @@
-// HTML to NDI Converter - Electron main process
+// Web2NDI - Electron main process
 //
 // Renders the configured URL in an offscreen Chromium window and forwards every
 // painted frame (BGRA) to the native NDI sender addon, which publishes it as an
@@ -33,13 +33,9 @@ const { loadConfig, resolveConfigPath } = require("./config");
 // ---------------------------------------------------------------------------
 let tray = null;
 
-// Embedded 32x32 tray icon (blue ring + play glyph) so no binary asset is
-// needed in the package.
-const TRAY_ICON_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAnElEQVR4nO2UyxGAMAhEqcR6bdQ61HMm" +
-  "CbAs+JkwwxHfy5ogsupLte3HaenHwCkiKDwsMfrgXTJrmogXrImUwkMSLDgswYT3JMqih1KIwmfzqQKW" +
-  "55oiMFtAqQKWDZgi4FnB/0zgNXeg5BUgu2A0a15EkRRaoPv0rBS036MKMCUgOEsiBO8JWEVGc24BTcTa" +
-  "MJghQYEjInTwqsy6ABMbB/igIZVQAAAAAElFTkSuQmCC";
+// Tray icon (32px PNG, base64) generated from build/icon.svg, embedded so the
+// packaged app needs no external asset. Regenerate with scripts/make-icons.js.
+const TRAY_ICON_BASE64 = require("./tray-icon");
 
 // ---------------------------------------------------------------------------
 // Load the native NDI sender addon.
@@ -408,7 +404,7 @@ function openLogViewer() {
   logWin = new BrowserWindow({
     width: 960,
     height: 600,
-    title: "HTML to NDI \u2013 Log",
+    title: "Web2NDI \u2013 Log",
     backgroundColor: "#1e1e1e",
     autoHideMenuBar: true,
     webPreferences: {
@@ -481,7 +477,7 @@ function updateTray() {
   });
   items.push({ label: "Quit", click: () => app.quit() });
 
-  tray.setToolTip(`HTML to NDI \u2013 ${traySummary()}`);
+  tray.setToolTip(`Web2NDI \u2013 ${traySummary()}`);
   tray.setContextMenu(Menu.buildFromTemplate(items));
 }
 
@@ -563,7 +559,7 @@ function startConfigWatch() {
 
 app.whenReady().then(() => {
   console.log(
-    `[start] HTML to NDI Converter v${app.getVersion()} (electron ${process.versions.electron})`,
+    `[start] Web2NDI v${app.getVersion()} (electron ${process.versions.electron})`,
   );
   console.log(
     `[start] ${appConfig.streams.length} stream(s), ` +

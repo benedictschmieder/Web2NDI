@@ -25,7 +25,7 @@ const path = require("path");
 // Per-stream options (each NDI source gets its own values).
 const STREAM_DEFAULTS = {
   url: "https://example.com",
-  ndiName: "HTML to NDI",
+  ndiName: "Web2NDI",
   width: 1920,
   height: 1080,
   fps: 60,

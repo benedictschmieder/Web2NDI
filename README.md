@@ -1,4 +1,10 @@
-# HTML to NDI Converter
+<p align="center">
+  <img src="assets/icon.svg" width="120" alt="Web2NDI logo" />
+</p>
+
+# Web2NDI
+
+> **Web2NDI** renders a live web page and broadcasts it on the network as an NDI® video source.
 
 > [!WARNING]
 > **Disclaimer:** This app is fully vibecoded and provided as-is without warranty. Review and test it before relying on it in production.
@@ -7,11 +13,11 @@ A Windows tool for media production and live streaming that renders a live web p
 
 ## How to use
 
-You only need the installer (`HTMLtoNDI Setup x.y.z.exe`) from the [Releases page](../../releases) and the free [NDI Tools / Runtime](https://ndi.video/tools/).
+You only need the installer (`Web2NDI Setup x.y.z.exe`) from the [Releases page](../../releases) and the free [NDI Tools / Runtime](https://ndi.video/tools/).
 
 **1. Install the NDI Runtime** (one-time, per machine) from https://ndi.video/tools/. This provides the NDI discovery service used by NDI receivers.
 
-**2. Run the installer.** It's a one-click per-user installer (no admin needed) and launches automatically. It installs to `C:\Users\<you>\AppData\Local\Programs\HTMLtoNDI\`, with `HTMLtoNDI.exe` and `config.json` side by side in that folder.
+**2. Run the installer.** It's a one-click per-user installer (no admin needed) and launches automatically. It installs to `C:\Users\<you>\AppData\Local\Programs\Web2NDI\`, with `Web2NDI.exe` and `config.json` side by side in that folder.
 
 **3. Configure** by editing `config.json` next to the exe. **Changes are applied automatically** — the app watches the file and reloads its streams a moment after you save, no restart needed (the only exception is `disableHardwareAcceleration`, which needs a restart).
 

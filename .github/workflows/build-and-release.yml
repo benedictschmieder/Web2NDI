@@ -73,7 +73,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: HTMLtoNDI-windows
+          name: Web2NDI-windows
           path: |
             dist/*.exe
             dist/*.blockmap
