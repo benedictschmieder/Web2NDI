@@ -1,8 +1,9 @@
 // Generates the app and tray icons from assets/icon.svg.
 //
 // This is a dev-only tool and is intentionally NOT wired into the normal
-// build. Its outputs (assets/icon.ico, assets/icon.png, src/tray-icon.js) are
-// committed, so regular builds and CI never need the heavy image deps.
+// build. Its outputs (assets/icon.ico, assets/icon.png, src/tray-icon.js and
+// assets/social.png) are committed, so regular builds and CI never need the
+// heavy image deps.
 //
 // To regenerate after editing assets/icon.svg, install the two dev-only tools
 // (kept out of package.json to keep CI light) and run this script:
@@ -20,6 +21,7 @@ const pngToIco = pngToIcoModule.default || pngToIcoModule;
 const root = path.join(__dirname, "..");
 const assetsDir = path.join(root, "assets");
 const svgPath = path.join(assetsDir, "icon.svg");
+const socialSvgPath = path.join(assetsDir, "social.svg");
 
 async function png(size, outPath) {
   const buf = await sharp(svgPath, { density: 384 })
@@ -53,8 +55,14 @@ async function png(size, outPath) {
     "\";\n";
   fs.writeFileSync(path.join(root, "src", "tray-icon.js"), js);
 
+  // GitHub social preview banner (recommended 1280x640).
+  await sharp(socialSvgPath, { density: 144 })
+    .resize(1280, 640)
+    .png()
+    .toFile(path.join(assetsDir, "social.png"));
+
   console.log(
-    "Generated assets/icon.png, assets/icon.ico, src/tray-icon.js from assets/icon.svg",
+    "Generated assets/icon.png, assets/icon.ico, src/tray-icon.js, assets/social.png",
   );
 })().catch((e) => {
   console.error(e);
