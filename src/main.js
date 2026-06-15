@@ -99,6 +99,14 @@ let senderW = 0;
 let senderH = 0;
 let reloadTimer = null;
 
+// Latest captured frame. Chromium's offscreen renderer only fires "paint" when
+// the page changes, so we cache the most recent bitmap and re-transmit it on a
+// steady timer. This keeps the NDI stream alive and guarantees that a receiver
+// connecting at any moment immediately gets the current frame instead of
+// whatever happened to be sent last.
+let lastFrame = null; // { data: Buffer, width, height }
+let frameTimer = null;
+
 // ---------------------------------------------------------------------------
 // Tray icon + status menu.
 // ---------------------------------------------------------------------------
@@ -190,6 +198,37 @@ function ensureSender(width, height) {
   console.log(`[ndi] Source "${config.ndiName}" @ ${width}x${height}`);
 }
 
+// Transmit the most recent frame at a steady cadence (config.fps). Sending
+// continuously - rather than only on \"paint\" - means a receiver that selects
+// the source at any time immediately receives the current frame, instead of a
+// stale one left over from the last page change.
+function startFrameLoop() {
+  if (frameTimer) return;
+  const intervalMs = Math.max(1, Math.round(1000 / Math.max(1, config.fps)));
+  frameTimer = setInterval(() => {
+    if (!lastFrame) return;
+    try {
+      ensureSender(lastFrame.width, lastFrame.height);
+      sender.send(
+        lastFrame.data,
+        lastFrame.width,
+        lastFrame.height,
+        config.frameRateNumerator,
+        config.frameRateDenominator,
+      );
+    } catch (err) {
+      console.error("[frame]", err.message);
+    }
+  }, intervalMs);
+}
+
+function stopFrameLoop() {
+  if (frameTimer) {
+    clearInterval(frameTimer);
+    frameTimer = null;
+  }
+}
+
 function scheduleReload(reason) {
   setStatus("error", reason);
   if (reloadTimer) return;
@@ -228,19 +267,19 @@ function createWindow() {
     try {
       const size = image.getSize();
       if (size.width === 0 || size.height === 0) return;
-      ensureSender(size.width, size.height);
-      const bitmap = image.getBitmap(); // BGRA, length = w*h*4
-      sender.send(
-        bitmap,
-        size.width,
-        size.height,
-        config.frameRateNumerator,
-        config.frameRateDenominator,
-      );
+      // Copy the bitmap: the image buffer is only valid for the duration of the
+      // event, but the frame loop needs a stable reference between paints.
+      lastFrame = {
+        data: Buffer.from(image.toBitmap()), // BGRA, length = w*h*4
+        width: size.width,
+        height: size.height,
+      };
     } catch (err) {
       console.error("[paint]", err.message);
     }
   });
+
+  startFrameLoop();
 
   win.webContents.on("did-fail-load", (e, code, desc, url, isMainFrame) => {
     if (isMainFrame) scheduleReload(`did-fail-load (${code} ${desc})`);
@@ -281,6 +320,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  stopFrameLoop();
   if (sender) {
     try {
       sender.destroy();
