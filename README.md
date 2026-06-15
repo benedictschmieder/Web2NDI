@@ -51,13 +51,7 @@ You only need the installer (`HTMLtoNDI Setup x.y.z.exe`) from the [Releases pag
 
 **5. Check status & logs.** The app runs in the background with a **system-tray icon**. Right-click it to see the live per-stream status (Streaming / Loading / Error), open `config.json`, open a **live log viewer** window (real-time log with filter, wrap and autoscroll), or open the log file. The log is the first place to look if no NDI source appears — it records each stream's URL, resolution, page load result, and any NDI errors.
 
-**6. Autostart on boot (optional)** so it runs unattended. Enable automatic Windows logon for the production user, then run this once in an elevated PowerShell from the project folder. It registers a scheduled task `HtmlToNdiConverter` that launches at logon and auto-restarts on crash.
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install-autostart.ps1
-```
-
-Target a specific exe with `-ExePath "C:\Path\To\HTMLtoNDI.exe"`, start it now with `Start-ScheduledTask -TaskName "HtmlToNdiConverter"`, or remove it with `uninstall-autostart.ps1`.
+**6. Autostart on boot (optional)** so it runs unattended. Right-click the tray icon and tick **"Start automatically at logon"**. This adds a per-user entry that launches the app when you sign in (untick to remove it); no admin rights, scripts, or scheduled tasks needed. For fully unattended operation, also enable automatic Windows logon for the production user.
 
 ## How it works
 

@@ -374,6 +374,27 @@ function openConfig() {
   }
 }
 
+// Autostart is managed through Electron's login-item API, which on Windows
+// writes a per-user registry Run entry pointing at this executable. No external
+// script or admin rights are required.
+function isAutoStartEnabled() {
+  try {
+    return app.getLoginItemSettings().openAtLogin;
+  } catch (e) {
+    return false;
+  }
+}
+
+function setAutoStart(enabled) {
+  try {
+    app.setLoginItemSettings({ openAtLogin: enabled });
+    console.log(`[autostart] ${enabled ? "enabled" : "disabled"}`);
+  } catch (e) {
+    console.error("[autostart]", e.message);
+  }
+  updateTray();
+}
+
 // Open (or focus) a live log viewer window. It shows the buffered session log
 // on open and then streams new lines as they are written.
 function openLogViewer() {
@@ -452,6 +473,12 @@ function updateTray() {
     click: () => shell.showItemInFolder(logger.getLogFilePath()),
   });
   items.push({ type: "separator" });
+  items.push({
+    label: "Start automatically at logon",
+    type: "checkbox",
+    checked: isAutoStartEnabled(),
+    click: (item) => setAutoStart(item.checked),
+  });
   items.push({ label: "Quit", click: () => app.quit() });
 
   tray.setToolTip(`HTML to NDI \u2013 ${traySummary()}`);
