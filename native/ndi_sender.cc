@@ -26,6 +26,7 @@ class NdiSender : public Napi::ObjectWrap<NdiSender> {
 
  private:
   Napi::Value Send(const Napi::CallbackInfo& info);
+  Napi::Value GetConnections(const Napi::CallbackInfo& info);
   void Destroy(const Napi::CallbackInfo& info);
   void CleanUp();
 
@@ -37,6 +38,7 @@ class NdiSender : public Napi::ObjectWrap<NdiSender> {
 Napi::Object NdiSender::Init(Napi::Env env, Napi::Object exports) {
   Napi::Function func = DefineClass(env, "NdiSender", {
       InstanceMethod("send", &NdiSender::Send),
+      InstanceMethod("getConnections", &NdiSender::GetConnections),
       InstanceMethod("destroy", &NdiSender::Destroy),
   });
 
@@ -144,6 +146,17 @@ Napi::Value NdiSender::Send(const Napi::CallbackInfo& info) {
   buf_index_ ^= 1;
 
   return env.Undefined();
+}
+
+// Returns the number of receivers currently connected to this sender, or -1 if
+// the sender has been destroyed. Uses a 0ms timeout so it never blocks.
+Napi::Value NdiSender::GetConnections(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (!send_instance_) {
+    return Napi::Number::New(env, -1);
+  }
+  const int connections = NDIlib_send_get_no_connections(send_instance_, 0);
+  return Napi::Number::New(env, connections);
 }
 
 void NdiSender::Destroy(const Napi::CallbackInfo& info) { CleanUp(); }
