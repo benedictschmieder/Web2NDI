@@ -115,6 +115,7 @@ let streams = [];
 let configError = null; // last config-parse error message, surfaced in the tray
 let watchedPath = null;
 let reloadDebounce = null;
+let logWin = null; // the live log viewer window, if open
 
 // ---------------------------------------------------------------------------
 // Stream: owns one offscreen window + NDI sender pair plus the timers that keep
@@ -373,6 +374,48 @@ function openConfig() {
   }
 }
 
+// Open (or focus) a live log viewer window. It shows the buffered session log
+// on open and then streams new lines as they are written.
+function openLogViewer() {
+  if (logWin && !logWin.isDestroyed()) {
+    if (logWin.isMinimized()) logWin.restore();
+    logWin.show();
+    logWin.focus();
+    return;
+  }
+
+  logWin = new BrowserWindow({
+    width: 960,
+    height: 600,
+    title: "HTML to NDI \u2013 Log",
+    backgroundColor: "#1e1e1e",
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, "log-preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  logWin.setMenuBarVisibility(false);
+
+  const wc = logWin.webContents;
+  const onLine = (line) => {
+    if (logWin && !logWin.isDestroyed()) wc.send("log:line", line);
+  };
+
+  wc.on("did-finish-load", () => {
+    wc.send("log:init", logger.getBuffer());
+    logger.events.on("line", onLine);
+  });
+
+  logWin.on("closed", () => {
+    logger.events.removeListener("line", onLine);
+    logWin = null;
+  });
+
+  logWin.loadFile(path.join(__dirname, "log-viewer.html"));
+}
+
 function traySummary() {
   if (configError) return `\u26A0 Config error`;
   if (streams.length === 0) return "No streams configured";
@@ -399,6 +442,7 @@ function updateTray() {
   });
   if (streams.length > 0) items.push({ type: "separator" });
   items.push({ label: "Open config.json", click: openConfig });
+  items.push({ label: "Open log viewer", click: openLogViewer });
   items.push({
     label: "Open log file",
     click: () => shell.openPath(logger.getLogFilePath()),

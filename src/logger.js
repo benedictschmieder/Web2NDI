@@ -6,9 +6,17 @@
 const fs = require("fs");
 const path = require("path");
 const { app } = require("electron");
+const { EventEmitter } = require("events");
 
 let logFilePath = null;
 let stream = null;
+
+// In-memory ring buffer of recent lines plus an emitter, so a live log viewer
+// window can show history on open and stream new lines as they arrive.
+const MAX_BUFFER = 2000;
+const buffer = [];
+const events = new EventEmitter();
+events.setMaxListeners(0);
 
 function init() {
   if (logFilePath) return logFilePath;
@@ -39,6 +47,9 @@ function write(level, args) {
       /* ignore */
     }
   }
+  buffer.push(line);
+  if (buffer.length > MAX_BUFFER) buffer.shift();
+  events.emit("line", line);
   return line;
 }
 
@@ -64,4 +75,9 @@ function getLogFilePath() {
   return logFilePath || init();
 }
 
-module.exports = { init, patchConsole, getLogFilePath };
+// Snapshot of the buffered session lines (oldest first).
+function getBuffer() {
+  return buffer.slice();
+}
+
+module.exports = { init, patchConsole, getLogFilePath, getBuffer, events };
