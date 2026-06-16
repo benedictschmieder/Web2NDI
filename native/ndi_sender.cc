@@ -87,6 +87,10 @@ void NdiSender::CleanUp() {
     NDIlib_send_send_video_async_v2(send_instance_, nullptr);
     NDIlib_send_destroy(send_instance_);
     send_instance_ = nullptr;
+    // Pair the NDIlib_initialize() from the constructor. Without this the NDI
+    // runtime keeps stale internal/discovery state, so a second run is
+    // discovered over mDNS but never delivers frames.
+    NDIlib_destroy();
   }
 }
 
