@@ -2,6 +2,10 @@
 //
 // Writes to <userData>/logs/htmltondi.log so the packaged (windowless) app
 // leaves a trace you can inspect from the tray menu when something fails.
+//
+// The file is truncated on each launch and then size-rotated during a session
+// (htmltondi.log -> .1 -> .2), so a long-running autostart instance can never
+// grow the logs without bound.
 
 const fs = require("fs");
 const path = require("path");
@@ -9,7 +13,14 @@ const { app } = require("electron");
 const { EventEmitter } = require("events");
 
 let logFilePath = null;
-let stream = null;
+let fd = null;
+let bytesWritten = 0;
+
+// On-disk rotation: cap each file and keep a couple of rotated generations.
+// Writes are synchronous (log volume is low – a health line every ~10s plus
+// occasional events), which keeps rotation deterministic and race-free.
+const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB per file
+const MAX_ROTATED_FILES = 2; // keep <log>.1 and <log>.2
 
 // In-memory ring buffer of recent lines plus an emitter, so a live log viewer
 // window can show history on open and stream new lines as they arrive.
@@ -29,22 +40,64 @@ function init() {
   logFilePath = path.join(dir, "htmltondi.log");
   try {
     // Truncate on each launch so the file reflects the current session.
-    stream = fs.createWriteStream(logFilePath, { flags: "w" });
+    fd = fs.openSync(logFilePath, "w");
+    bytesWritten = 0;
   } catch (e) {
-    stream = null;
+    fd = null;
   }
   return logFilePath;
+}
+
+// Move a file out of the way, overwriting any existing destination. renameSync
+// fails on Windows if the target exists, so unlink it first.
+function safeMove(src, dst) {
+  try {
+    if (!fs.existsSync(src)) return;
+    if (fs.existsSync(dst)) fs.unlinkSync(dst);
+    fs.renameSync(src, dst);
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+// When the current file would exceed MAX_FILE_BYTES, close it, shift the
+// rotated generations (.1 -> .2, current -> .1) and start a fresh file.
+function rotateIfNeeded(nextLineBytes) {
+  if (fd === null || !logFilePath) return;
+  if (bytesWritten + nextLineBytes <= MAX_FILE_BYTES) return;
+  try {
+    fs.closeSync(fd);
+  } catch (e) {
+    /* ignore */
+  }
+  fd = null;
+  for (let i = MAX_ROTATED_FILES - 1; i >= 1; i--) {
+    safeMove(`${logFilePath}.${i}`, `${logFilePath}.${i + 1}`);
+  }
+  safeMove(logFilePath, `${logFilePath}.1`);
+  try {
+    fd = fs.openSync(logFilePath, "w");
+    bytesWritten = 0;
+  } catch (e) {
+    fd = null;
+  }
 }
 
 function write(level, args) {
   const line = `${new Date().toISOString()} [${level}] ${args
     .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
     .join(" ")}`;
-  if (stream) {
-    try {
-      stream.write(line + "\n");
-    } catch (e) {
-      /* ignore */
+  if (fd !== null) {
+    const payload = line + "\n";
+    const lineBytes = Buffer.byteLength(payload);
+    rotateIfNeeded(lineBytes);
+    if (fd !== null) {
+      try {
+        fs.writeSync(fd, payload);
+        bytesWritten += lineBytes;
+      } catch (e) {
+        /* ignore */
+      }
     }
   }
   buffer.push(line);
