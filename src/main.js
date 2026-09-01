@@ -155,6 +155,11 @@ let reloadDebounce = null;
 let logWin = null; // the live log viewer window, if open
 let configWin = null; // the config editor window, if open
 
+// How often, and for how long, a stream re-checks that the frames Chromium
+// paints really carry the configured resolution (see Stream.checkSize()).
+const SIZE_CHECK_INTERVAL_MS = 2000;
+const SIZE_CHECK_MAX_ATTEMPTS = 60; // give up after ~2 minutes
+
 // ---------------------------------------------------------------------------
 // Stream: owns one offscreen window + NDI sender pair plus the timers that keep
 // the source alive. Each configured NDI source gets its own instance.
@@ -174,6 +179,14 @@ class Stream {
     this.frameTimer = null;
     this.healthTimer = null;
     this.reloadTimer = null;
+    this.sizeTimer = null;
+    this.sizeAttempts = 0;
+    this.sizeWarned = false;
+    this.sizeScale = 1; // last observed content-size -> painted-pixel factor
+    // Paint counter + the counter value at the last size correction, so the
+    // watchdog can tell a frame painted since that correction from a stale one.
+    this.paintSeq = 0;
+    this.sizeAppliedSeq = 0;
     this.sendCount = 0;
     this.state = "starting"; // starting | loading | streaming | error
     this.detail = "";
@@ -290,6 +303,121 @@ class Stream {
     }
   }
 
+  // Ask the offscreen window for the content size that makes Chromium paint
+  // exactly cfg.width x cfg.height pixels. Content sizes are device-independent
+  // pixels, so a scaled display multiplies them; `scale` is the ratio observed
+  // between the size we set and the frames we got back (1 when unscaled).
+  applyConfiguredSize(scale = 1) {
+    if (!this.win || this.win.isDestroyed()) return;
+    const factor = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    this.sizeScale = factor;
+    const width = Math.max(2, Math.round(this.cfg.width / factor));
+    const height = Math.max(2, Math.round(this.cfg.height / factor));
+    try {
+      const [curW, curH] = this.win.getContentSize();
+      if (curW === width && curH === height) return;
+      this.win.setContentSize(width, height);
+      this.sizeAppliedSeq = this.paintSeq;
+      console.log(
+        `[size] "${this.cfg.ndiName}" content size ${curW}x${curH} -> ` +
+          `${width}x${height}` +
+          (factor !== 1 ? ` (display scale ${factor})` : ""),
+      );
+    } catch (err) {
+      console.error(`[size] "${this.cfg.ndiName}"`, err.message);
+    }
+  }
+
+  startSizeWatchdog() {
+    if (this.sizeTimer || this.destroyed) return;
+    this.sizeTimer = setInterval(
+      () => this.checkSize(),
+      SIZE_CHECK_INTERVAL_MS,
+    );
+  }
+
+  stopSizeWatchdog() {
+    if (this.sizeTimer) {
+      clearInterval(this.sizeTimer);
+      this.sizeTimer = null;
+    }
+  }
+
+  // Re-run the size check from scratch. Used when the desktop changes after
+  // startup (a monitor waking up, the display driver settling after logon),
+  // which is exactly the case an autostarted instance runs into.
+  recheckSize() {
+    this.stopSizeWatchdog();
+    this.sizeAttempts = 0;
+    this.sizeWarned = false;
+    this.startSizeWatchdog();
+  }
+
+  // Compare the size Chromium actually paints with the configured resolution
+  // and correct the window until they match, then stop.
+  checkSize() {
+    if (this.destroyed || !this.win || this.win.isDestroyed()) {
+      this.stopSizeWatchdog();
+      return;
+    }
+    const frame = this.lastFrame;
+    // Only judge frames painted since the last correction; an older one still
+    // carries the previous size and would make us correct back and forth.
+    const fresh = !!frame && this.paintSeq > this.sizeAppliedSeq;
+
+    if (
+      fresh &&
+      frame.width === this.cfg.width &&
+      frame.height === this.cfg.height
+    ) {
+      this.stopSizeWatchdog();
+      if (this.sizeWarned) {
+        console.log(
+          `[size] "${this.cfg.ndiName}" now rendering the configured ` +
+            `${this.cfg.width}x${this.cfg.height}`,
+        );
+        this.sizeWarned = false;
+      }
+      return;
+    }
+
+    if (this.sizeAttempts++ >= SIZE_CHECK_MAX_ATTEMPTS) {
+      this.stopSizeWatchdog();
+      console.error(
+        `[size] "${this.cfg.ndiName}" giving up: ` +
+          (frame
+            ? `rendering ${frame.width}x${frame.height} instead of `
+            : "no frame painted, expected ") +
+          `${this.cfg.width}x${this.cfg.height}`,
+      );
+      return;
+    }
+
+    if (!fresh) {
+      // Nothing new to measure yet - re-assert the size we want and wait.
+      this.applyConfiguredSize(this.sizeScale);
+      return;
+    }
+
+    if (!this.sizeWarned) {
+      console.warn(
+        `[size] "${this.cfg.ndiName}" rendering ${frame.width}x${frame.height}, ` +
+          `configured ${this.cfg.width}x${this.cfg.height} - correcting`,
+      );
+      this.sizeWarned = true;
+    }
+    // Derive the factor between the content size we asked for and the frames we
+    // get, then request a content size that cancels it out.
+    let scale = 1;
+    try {
+      const [curW] = this.win.getContentSize();
+      if (curW > 0) scale = frame.width / curW;
+    } catch (e) {
+      /* ignore */
+    }
+    this.applyConfiguredSize(scale);
+  }
+
   scheduleReload(reason) {
     this.setStatus("error", reason);
     if (this.reloadTimer || this.destroyed) return;
@@ -329,10 +457,23 @@ class Stream {
     this.win.webContents.setAudioMuted(true);
     this.win.webContents.setFrameRate(cfg.fps);
 
+    // The size a window is *created* with goes through the OS window manager,
+    // which does not have to honour it: Windows clamps a new window to the work
+    // area of the display it lands on. At logon that work area is whatever the
+    // session has come up with so far - the display driver may still be
+    // initialising, a monitor may be asleep, or there may be no monitor at all -
+    // so an autostarted instance could end up rendering (and publishing) at a
+    // size that has nothing to do with the configured width/height. Setting the
+    // content size explicitly after creation is not clamped, and the watchdog
+    // below keeps correcting until the painted frames are the configured size.
+    this.applyConfiguredSize();
+    this.startSizeWatchdog();
+
     this.win.webContents.on("paint", (event, dirty, image) => {
       try {
         const sz = image.getSize();
         if (sz.width === 0 || sz.height === 0) return;
+        this.paintSeq++;
         // Copy the bitmap: the image buffer is only valid for the duration of
         // the event, but the frame loop needs a stable reference between paints.
         this.lastFrame = {
@@ -376,6 +517,7 @@ class Stream {
   destroy() {
     this.destroyed = true;
     this.stopLoops();
+    this.stopSizeWatchdog();
     if (this.reloadTimer) {
       clearTimeout(this.reloadTimer);
       this.reloadTimer = null;
@@ -694,6 +836,22 @@ function startConfigWatch() {
   });
 }
 
+// The desktop an autostarted instance finds at logon is not necessarily the one
+// it ends up running on: a display driver can finish initialising, a monitor can
+// wake up, or the resolution/scale can change seconds later. Any of that changes
+// what Chromium considers a valid window size, so re-verify every stream's
+// render size when it happens.
+function watchDisplayChanges() {
+  const { screen } = require("electron");
+  const recheck = (reason) => () => {
+    console.log(`[size] display change (${reason}), re-checking stream sizes`);
+    for (const s of streams) s.recheckSize();
+  };
+  screen.on("display-added", recheck("added"));
+  screen.on("display-removed", recheck("removed"));
+  screen.on("display-metrics-changed", recheck("metrics"));
+}
+
 app.whenReady().then(() => {
   console.log(
     `[start] Web2NDI v${app.getVersion()} (electron ${process.versions.electron})`,
@@ -714,6 +872,7 @@ app.whenReady().then(() => {
   createTray();
   startStreams(appConfig);
   startConfigWatch();
+  watchDisplayChanges();
 });
 
 // Tray app: stay alive even if all offscreen windows momentarily close during a

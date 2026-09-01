@@ -96,6 +96,7 @@ Or run the workflow manually from the **Actions** tab to get the installer as a 
 - **`NDIlib_initialize() failed`:** The NDI runtime DLL is missing — install NDI Tools or copy `Processing.NDI.Lib.x64.dll` next to the exe.
 - **Source shows defaults (example.com):** `config.json` has a typo and silently fell back to defaults; validate the JSON.
 - **Native build fails:** Ensure the C++ Build Tools workload is installed and the NDI 6 SDK exists (or set `NDI_SDK_DIR`).
+- **Wrong output resolution (especially after autostart):** Windows can hand the offscreen window a size clamped to the desktop that exists at logon, and a scaled display multiplies it. The app detects this and corrects itself — look for `[size]` lines in the log; a final `giving up` line means the configured resolution could not be reached.
 - **Black frame / high CPU:** Software rendering at 1080p60 is CPU-heavy; lower `fps`, `width`, or `height`.
 
 ## Alternative (no-code)
