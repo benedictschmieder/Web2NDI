@@ -41,6 +41,9 @@
         "to": "Processing.NDI.Lib.x64.dll"
       }
     ],
+    "nsis": {
+      "include": "scripts/installer.nsh"
+    },
     "win": {
       "icon": "assets/icon.ico",
       "target": [

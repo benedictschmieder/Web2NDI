@@ -2,8 +2,11 @@
 //
 // Resolution order for the config file:
 //   1. The HTML2NDI_CONFIG environment variable (absolute path), if set.
-//   2. config.json next to the packaged executable (process.resourcesPath/..).
-//   3. config.json in the project root (development).
+//   2. Packaged: config.json in the per-user data dir (%APPDATA%\Web2NDI).
+//      A config.json next to the executable (legacy location, wiped by the
+//      installer on every update) is migrated there once.
+//   3. config.json next to the packaged executable (legacy fallback).
+//   4. config.json in the project root (development).
 //
 // The file may describe a single stream or several. All of the following are
 // accepted:
@@ -21,6 +24,13 @@
 
 const fs = require("fs");
 const path = require("path");
+
+let app = null;
+try {
+  ({ app } = require("electron"));
+} catch (e) {
+  // Not running inside Electron (plain node script); dev paths apply.
+}
 
 // Per-stream options (each NDI source gets its own values).
 const STREAM_DEFAULTS = {
@@ -40,12 +50,48 @@ const APP_DEFAULTS = {
   disableHardwareAcceleration: true,
 };
 
+// Per-user config location for packaged builds. The install directory is wiped
+// on every update, so the config must live outside it.
+function userConfigPath() {
+  if (!app || !app.isPackaged) return null;
+  try {
+    return path.join(app.getPath("userData"), "config.json");
+  } catch (e) {
+    return null;
+  }
+}
+
+// One-time migration: seed the per-user config from a config.json found next to
+// the executable (the legacy location, also where the installer places the
+// bundled example on a fresh install).
+function migrateLegacyConfig(target) {
+  if (!target || fs.existsSync(target) || !process.resourcesPath) return;
+  const legacy = [
+    path.join(process.resourcesPath, "..", "config.json"),
+    path.join(process.resourcesPath, "config.json"),
+  ].find((p) => fs.existsSync(p));
+  if (!legacy) return;
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(legacy, target);
+    console.log(`[config] migrated ${legacy} -> ${target}`);
+  } catch (err) {
+    console.warn(`[config] migration to ${target} failed: ${err.message}`);
+  }
+}
+
 function candidatePaths() {
   const paths = [];
   if (process.env.HTML2NDI_CONFIG) {
     paths.push(process.env.HTML2NDI_CONFIG);
   }
-  // Packaged: config.json sits next to the .exe (extraResources -> ../config.json).
+  // Packaged: per-user data dir, seeded from the legacy location if needed.
+  const userPath = userConfigPath();
+  if (userPath) {
+    migrateLegacyConfig(userPath);
+    paths.push(userPath);
+  }
+  // Legacy packaged location next to the .exe (fallback if migration failed).
   if (process.resourcesPath) {
     paths.push(path.join(process.resourcesPath, "..", "config.json"));
     paths.push(path.join(process.resourcesPath, "config.json"));
@@ -56,13 +102,13 @@ function candidatePaths() {
 }
 
 // Resolve the config file we should read/watch: the first candidate that
-// exists, or the most likely place one should live (next to the packaged exe).
+// exists, or the place a new one should be created.
 function resolveConfigPath() {
   const candidates = candidatePaths();
   for (const p of candidates) {
     if (p && fs.existsSync(p)) return p;
   }
-  return candidates[candidates.length - 1] || null;
+  return userConfigPath() || candidates[candidates.length - 1] || null;
 }
 
 function sanitizeStream(raw) {

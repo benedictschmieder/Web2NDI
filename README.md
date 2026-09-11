@@ -17,9 +17,9 @@ You only need the installer (`Web2NDI Setup x.y.z.exe`) from the [Releases page]
 
 **1. Install the NDI Runtime** (one-time, per machine) from https://ndi.video/tools/. This provides the NDI discovery service used by NDI receivers.
 
-**2. Run the installer.** It's a one-click per-user installer (no admin needed) and launches automatically. It installs to `C:\Users\<you>\AppData\Local\Programs\Web2NDI\`, with `Web2NDI.exe` and `config.json` side by side in that folder.
+**2. Run the installer.** It's a one-click per-user installer (no admin needed) and launches automatically. It installs to `C:\Users\<you>\AppData\Local\Programs\Web2NDI\`. Your settings live in `C:\Users\<you>\AppData\Roaming\Web2NDI\config.json`, outside the install folder, so they survive updates (a config from an older version that kept it next to the exe is migrated automatically).
 
-**3. Configure** either with the built-in editor — right-click the tray icon and choose **"Edit configuration…"** for a form with global defaults and one card per stream — or by editing `config.json` next to the exe directly. **Changes are applied automatically** — the app watches the file and reloads its streams a moment after you save, no restart needed (the only exception is `disableHardwareAcceleration`, which needs a restart).
+**3. Configure** either with the built-in editor — right-click the tray icon and choose **"Edit configuration…"** for a form with global defaults and one card per stream — or by editing `config.json` (see step 2 for its location) directly. **Changes are applied automatically** — the app watches the file and reloads its streams a moment after you save, no restart needed (the only exception is `disableHardwareAcceleration`, which needs a restart).
 
 | Field                                         | Meaning                                                                                              |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
